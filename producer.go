@@ -6,7 +6,7 @@ type Producer interface {
 	// push message to the queue
 	// if the queue's buffer is full, just drops message and returns an error
 	Publish(value int) error
-	
+
 	// applies your custom filter before publishing messages
 	WithFilter(f Filter) Producer
 
@@ -21,11 +21,13 @@ type Producer interface {
 }
 
 type producer struct {
-	q *queue
+	q       *queue
 	filters []Filter
 }
 
 func (p *producer) Publish(value int) error {
+
+	// айди инкрементится до проверки, инкрементим только для опубликованных сообщений
 	message := createMessage(p.q, value)
 
 	for _, filter := range p.filters {
@@ -85,7 +87,7 @@ func (p *producer) Close() {
 
 func newProducer(q *queue) *producer {
 	return &producer{
-		q: q,
+		q:       q,
 		filters: make([]Filter, 0),
 	}
 }

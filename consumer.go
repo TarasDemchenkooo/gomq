@@ -3,6 +3,8 @@ package gomq
 import "fmt"
 
 const defaultConsumerBufferSize = 64
+
+// осуждаю, так делать нельзя, singltone почти всегда кал
 var ConsumerBufferSize = defaultConsumerBufferSize
 
 // not thread safe
@@ -25,7 +27,7 @@ type Consumer interface {
 type consumer struct {
 	q *queue
 
-	buffer chan Message
+	buffer   chan Message
 	userChan chan Message
 
 	pending map[uint64]Message
@@ -35,6 +37,8 @@ func (c *consumer) Messages() <-chan Message {
 	return c.userChan
 }
 
+// c.pending читается тут и в Pending() - race condition
+// гонка не на стороне пользователя а на стороне внутренней горутины consume()
 func (c *consumer) Ack(id uint64) error {
 	if _, ok := c.pending[id]; !ok {
 		return fmt.Errorf("there's no message with id %d", id)
@@ -62,10 +66,10 @@ func (c *consumer) Close() {
 
 func newConsumer(q *queue) *consumer {
 	c := &consumer{
-		q: q,
-		buffer: make(chan Message, ConsumerBufferSize),
+		q:        q,
+		buffer:   make(chan Message, ConsumerBufferSize), // просто в конструктор принимаешь это и сюда сетишь
 		userChan: make(chan Message),
-		pending: make(map[uint64]Message),
+		pending:  make(map[uint64]Message),
 	}
 
 	go c.consume()
@@ -73,6 +77,7 @@ func newConsumer(q *queue) *consumer {
 	return c
 }
 
+// userChan небуферизованный, если пользователь не читает MEssages() consume виснет и горутина течет, нужен select грамотный
 func (c *consumer) consume() {
 	for msg := range c.buffer {
 		c.pending[msg.ID] = msg
