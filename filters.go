@@ -7,9 +7,9 @@ var zeroFilter Filter = func(m Message) bool {
 }
 
 var evenFilter Filter = func(m Message) bool {
-	return m.Value % 2 != 0
+	return m.Value % 2 == 0
 }
 
 var oddFilter Filter = func(m Message) bool {
-	return m.Value % 2 == 0
+	return m.Value % 2 != 0
 }

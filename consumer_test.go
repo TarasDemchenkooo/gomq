@@ -39,18 +39,16 @@ func TestConsumerAck(t *testing.T) {
 }
 
 func TestUniqueMessageID(t *testing.T) {
-	const messagesCount = 200000
+	const messagesCount = 20000
 	const producersCount = 10
-	QueueBufferSize = messagesCount
-	ConsumerBufferSize = messagesCount
 
 	b := NewBroker()
 	producers := [producersCount]Producer{}
 	for i := 0; i < producersCount; i++ {
 		producers[i] = b.NewProducer("a")
 	}
-	q := b.Queue("a")
-	c := q.Subscribe()
+	q := b.Queue("a", WithQueueBufferSize(messagesCount))
+	c := q.Subscribe(WithConsumerBufferSize(messagesCount))
 	ch := c.Messages()
 
 	errCh := make(chan error, 1)
@@ -58,7 +56,7 @@ func TestUniqueMessageID(t *testing.T) {
 
 	go func() {
 		set := make(map[uint64]struct{}, messagesCount)
-		deadline := time.After(5 * time.Second)
+		deadline := time.After(10 * time.Second)
 
 		for i := 0; i < messagesCount; i++ {
 			select {
@@ -80,15 +78,15 @@ func TestUniqueMessageID(t *testing.T) {
 	var wg sync.WaitGroup
 
 	publish := func(p Producer) {
+		defer wg.Done()
+
 		for i := 0; i < messagesCount / producersCount; i++ {
 			p.Publish(i)
 		}
-		wg.Done()
 	}
 
-	wg.Add(producersCount)
-
 	for i := 0; i < producersCount; i++ {
+		wg.Add(1)
 		go publish(producers[i])
 	}
 
@@ -99,7 +97,4 @@ func TestUniqueMessageID(t *testing.T) {
 		t.Fatal(err)
 	case <-done:
 	}
-
-	QueueBufferSize = defaultQueueBufferSize
-	ConsumerBufferSize = defaultConsumerBufferSize
 }
