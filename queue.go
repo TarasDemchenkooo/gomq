@@ -5,7 +5,9 @@ import (
 	"sync/atomic"
 )
 
+// тут тоже самое что и в consumer
 const defaultQueueBufferSize = 64
+
 var QueueBufferSize = defaultQueueBufferSize
 
 type Queue interface {
@@ -14,20 +16,20 @@ type Queue interface {
 
 	// create new consumer for the queue
 	Subscribe() Consumer
-	
+
 	// current count of consumers
 	ConsumerCount() int
 }
 
 type queue struct {
-	name string
-	buffer chan Message
+	name          string
+	buffer        chan Message
 	nextMessageID atomic.Uint64
 
-	cmu sync.Mutex
+	cmu       sync.Mutex
 	consumers map[*consumer]struct{}
 
-	mu sync.RWMutex
+	mu     sync.RWMutex
 	closed bool
 }
 
@@ -36,11 +38,12 @@ func (q *queue) Name() string {
 }
 
 func (q *queue) Subscribe() Consumer {
-	c := newConsumer(q)
+	c := newConsumer(q) // уже запустил go c.consume()
 
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
+	// при подписке на закрытую очередь consumer не добавляется в cinsumers. c.buffer не закроется и consume виснет
 	if q.closed {
 		return c
 	}
@@ -55,14 +58,14 @@ func (q *queue) Subscribe() Consumer {
 func (q *queue) ConsumerCount() int {
 	q.cmu.Lock()
 	defer q.cmu.Unlock()
-	
+
 	return len(q.consumers)
 }
 
 func newQueue(name string) *queue {
 	q := &queue{
-		name: name,
-		buffer: make(chan Message, QueueBufferSize),
+		name:      name,
+		buffer:    make(chan Message, QueueBufferSize),
 		consumers: make(map[*consumer]struct{}),
 	}
 
@@ -70,6 +73,11 @@ func newQueue(name string) *queue {
 	return q
 }
 
+// unsubscribe закрывает c.buffer. Но deliver() при закрытии очереди уже закрывает
+//
+//	нужно закрывать только если consumer реально был в мапе (ok из delete)
+//
+// panic: close of closed channel
 func (q *queue) unsubscribe(c *consumer) {
 	q.cmu.Lock()
 	defer q.cmu.Unlock()
@@ -91,6 +99,7 @@ func (q *queue) closeQueue() {
 }
 
 func (q *queue) deliver() {
+	// при полном буффере просто дропаются сообщения, медленный и быстрый получат разный набор сообщений
 	for message := range q.buffer {
 		q.cmu.Lock()
 		for c := range q.consumers {
