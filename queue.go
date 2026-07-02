@@ -3,9 +3,6 @@ package gomq
 import (
 	"sync"
 	"sync/atomic"
-	"time"
-	"context"
-	"fmt"
 )
 
 type Queue interface {
@@ -26,11 +23,9 @@ type queue struct {
 
 	cmu sync.Mutex
 	consumers map[*consumer]struct{}
-	backlog map[*consumer][]Message
 
 	mu sync.RWMutex
 	closed bool
-	timeout time.Duration
 }
 
 func (q *queue) Name() string {
@@ -66,8 +61,6 @@ func newQueue(name string, opts ...QueueOption) *queue {
 		name: name,
 		buffer: make(chan Message, defaultQueueBufferSize),
 		consumers: make(map[*consumer]struct{}),
-		backlog: make(map[*consumer][]Message),
-		timeout: defaultQueueClosingTimeout,
 	}
 
 	for _, opt := range opts {
@@ -83,11 +76,7 @@ func (q *queue) unsubscribe(c *consumer) {
 	q.cmu.Lock()
 	defer q.cmu.Unlock()
 
-	if _, ok := q.consumers[c]; ok {
-		delete(q.consumers, c)
-		delete(q.backlog, c)
-		close(c.buffer)
-	}
+	delete(q.consumers, c)
 }
 
 func (q *queue) closeQueue() {
@@ -106,73 +95,26 @@ func (q *queue) deliver() {
 	for message := range q.buffer {
 		q.cmu.Lock()
 		for c := range q.consumers {
-			// try to send all consumer's backlog within a tick
-			if backlog, ok := q.backlog[c]; ok {
-				i := 0
-
-				loop:
-				for i < len(backlog) {
-					select {
-					case c.buffer <- backlog[i]:
-						i++
-					default:
-						break loop
-					}
-				}
-
-				if i == len(backlog) {
-					delete(q.backlog, c)
-				} else {
-					q.backlog[c] = backlog[i:]
-				}
-			}
-
 			select {
 			case c.buffer <- message:
 			default:
-				q.backlog[c] = append(q.backlog[c], message)
+				c.bmu.Lock()
+				c.backlog = append(c.backlog, message)
+				c.bmu.Unlock()
+				c.cond.Signal()
 			}
 		}
 		q.cmu.Unlock()
 	}
 
-	// after queue closing, trying to send backlog within timeout
-	// on timeout just drop backlog for too slow consumers
 	q.cmu.Lock()
-	var wg sync.WaitGroup
-	ctx, cancel := context.WithTimeout(context.Background(), q.timeout)
-	defer cancel()
-
 	for c := range q.consumers {
-		backlog, ok := q.backlog[c]
-
-		if !ok {
-			close(c.buffer)
-			continue
-		}
-
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-			defer close(c.buffer)
-
-			i := 0
-
-			for i < len(backlog) {
-				select {
-				case c.buffer <- backlog[i]:
-					i++
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+		c.bmu.Lock()
+		c.backlogClosed = true
+		c.bmu.Unlock()
+		c.cond.Signal()
 	}
 
-	wg.Wait()
-
 	clear(q.consumers)
-	clear(q.backlog)
 	q.cmu.Unlock()
 }

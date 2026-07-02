@@ -28,6 +28,11 @@ type consumer struct {
 	buffer chan Message
 	userChan chan Message
 
+	bmu sync.Mutex
+	cond *sync.Cond
+	backlog []Message
+	backlogClosed bool
+
 	closeOnce sync.Once
 	done chan struct{}
 
@@ -86,8 +91,11 @@ func newConsumer(q *queue, opts ...ConsumerOption) *consumer {
 		opt(c)
 	}
 
+	c.cond = sync.NewCond(&c.bmu)
+
 	if !q.closed {
 		go c.consume()
+		go c.drainBacklog()
 	}
 
 	return c
@@ -106,5 +114,31 @@ func (c *consumer) consume() {
         case <-c.done:
             return
         }
+	}
+}
+
+func (c *consumer) drainBacklog() {
+	for {
+		c.bmu.Lock()
+		for len(c.backlog) == 0 && !c.backlogClosed {
+			c.cond.Wait()
+		}
+
+		if len(c.backlog) == 0 && c.backlogClosed {
+			c.bmu.Unlock()
+			return
+		}
+
+		snapshot := c.backlog
+		c.backlog = nil
+		c.bmu.Unlock()
+
+		for i := 0; i < len(snapshot); i++ {
+			select {
+			case c.buffer <- snapshot[i]:
+			case <-c.done:
+				return
+			}
+		}
 	}
 }
