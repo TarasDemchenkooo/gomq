@@ -10,7 +10,7 @@ type Queue interface {
 	Name() string
 
 	// create new consumer for the queue
-	Subscribe(opts ...ConsumerOption) Consumer
+	Subscribe() Consumer
 	
 	// current count of consumers
 	ConsumerCount() int
@@ -32,11 +32,11 @@ func (q *queue) Name() string {
 	return q.name
 }
 
-func (q *queue) Subscribe(opts ...ConsumerOption) Consumer {
+func (q *queue) Subscribe() Consumer {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	c := newConsumer(q, opts...)
+	c := newConsumer(q)
 
 	if q.closed {
 		return c
@@ -95,14 +95,10 @@ func (q *queue) deliver() {
 	for message := range q.buffer {
 		q.cmu.Lock()
 		for c := range q.consumers {
-			select {
-			case c.buffer <- message:
-			default:
-				c.bmu.Lock()
-				c.backlog = append(c.backlog, message)
-				c.bmu.Unlock()
-				c.cond.Signal()
-			}
+			c.bmu.Lock()
+			c.buffer = append(c.buffer, message)
+			c.bmu.Unlock()
+			c.cond.Signal()
 		}
 		q.cmu.Unlock()
 	}
@@ -110,7 +106,7 @@ func (q *queue) deliver() {
 	q.cmu.Lock()
 	for c := range q.consumers {
 		c.bmu.Lock()
-		c.backlogClosed = true
+		c.bufferClosed = true
 		c.bmu.Unlock()
 		c.cond.Signal()
 	}

@@ -25,19 +25,18 @@ type Consumer interface {
 type consumer struct {
 	q *queue
 
-	buffer chan Message
 	userChan chan Message
 
 	bmu sync.Mutex
 	cond *sync.Cond
-	backlog []Message
-	backlogClosed bool
-
-	closeOnce sync.Once
-	done chan struct{}
+	buffer []Message
+	bufferClosed bool
 
 	mu sync.Mutex
 	pending map[uint64]Message
+
+	closeOnce sync.Once
+	done chan struct{}
 }
 
 func (c *consumer) Messages() <-chan Message {
@@ -74,28 +73,31 @@ func (c *consumer) Pending() []Message {
 func (c *consumer) Close() {
 	c.closeOnce.Do(func() {
 		c.q.unsubscribe(c)
+		c.bmu.Lock()
+		c.bufferClosed = true
+		c.bmu.Unlock()
 		close(c.done)
+		c.cond.Signal()
 	})
 }
 
-func newConsumer(q *queue, opts ...ConsumerOption) *consumer {
+const initialConsumerBufferSize = 16
+
+func newConsumer(q *queue) *consumer {
 	c := &consumer{
 		q: q,
-		buffer: make(chan Message, defaultConsumerBufferSize),
 		userChan: make(chan Message),
+		buffer: make([]Message, 0, initialConsumerBufferSize),
 		pending: make(map[uint64]Message),
 		done: make(chan struct{}),
 	}
 
-	for _, opt := range opts {
-		opt(c)
-	}
-
 	c.cond = sync.NewCond(&c.bmu)
 
-	if !q.closed {
+	if q.closed {
+		close(c.userChan)
+	} else {
 		go c.consume()
-		go c.drainBacklog()
 	}
 
 	return c
@@ -104,38 +106,30 @@ func newConsumer(q *queue, opts ...ConsumerOption) *consumer {
 func (c *consumer) consume() {
 	defer close(c.userChan)
 
-	for msg := range c.buffer {
-		c.mu.Lock()
-        c.pending[msg.ID] = msg
-        c.mu.Unlock()
-
-        select {
-        case c.userChan <- msg:
-        case <-c.done:
-            return
-        }
-	}
-}
-
-func (c *consumer) drainBacklog() {
 	for {
 		c.bmu.Lock()
-		for len(c.backlog) == 0 && !c.backlogClosed {
+		for len(c.buffer) == 0 && !c.bufferClosed {
 			c.cond.Wait()
 		}
 
-		if len(c.backlog) == 0 && c.backlogClosed {
+		if len(c.buffer) == 0 && c.bufferClosed {
 			c.bmu.Unlock()
 			return
 		}
 
-		snapshot := c.backlog
-		c.backlog = nil
+		snapshot := c.buffer
+		c.buffer = make([]Message, 0, initialConsumerBufferSize)
 		c.bmu.Unlock()
 
 		for i := 0; i < len(snapshot); i++ {
+			message := snapshot[i]
+
+			c.mu.Lock()
+        	c.pending[message.ID] = message
+        	c.mu.Unlock()
+
 			select {
-			case c.buffer <- snapshot[i]:
+			case c.userChan <- message:
 			case <-c.done:
 				return
 			}

@@ -44,7 +44,7 @@ func TestSlowConsumer(t *testing.T) {
 
 	b := NewBroker()
 	q := b.Queue("a", WithQueueBufferSize(messagesCount))
-	c := q.Subscribe(WithConsumerBufferSize(10))
+	c := q.Subscribe()
 	ch := c.Messages()
 
 	producers := [producersCount]Producer{}
