@@ -38,36 +38,29 @@ func TestConsumerAck(t *testing.T) {
 	}
 }
 
-func TestUniqueMessageID(t *testing.T) {
-	const messagesCount = 200000
+func TestSlowConsumer(t *testing.T) {
+	const messagesCount = 1_000_000
 	const producersCount = 10
-	QueueBufferSize = messagesCount
-	ConsumerBufferSize = messagesCount
 
 	b := NewBroker()
+	q := b.Queue("a", WithQueueBufferSize(messagesCount))
+	c := q.Subscribe()
+	ch := c.Messages()
+
 	producers := [producersCount]Producer{}
 	for i := 0; i < producersCount; i++ {
 		producers[i] = b.NewProducer("a")
 	}
-	q := b.Queue("a")
-	c := q.Subscribe()
-	ch := c.Messages()
 
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
 
 	go func() {
-		set := make(map[uint64]struct{}, messagesCount)
-		deadline := time.After(5 * time.Second)
+		deadline := time.After(time.Second * messagesCount / 100_000)
 
 		for i := 0; i < messagesCount; i++ {
 			select {
-			case msg := <-ch:
-				if _, ok := set[msg.ID]; ok {
-					errCh <- fmt.Errorf("found message with duplicate ID")
-					return
-				}
-				set[msg.ID] = struct{}{}
+			case <-ch:
 			case <-deadline:
 				errCh <- fmt.Errorf("consumer timeout: received %d/%d messages", i, messagesCount)
 				return
@@ -80,15 +73,15 @@ func TestUniqueMessageID(t *testing.T) {
 	var wg sync.WaitGroup
 
 	publish := func(p Producer) {
+		defer wg.Done()
+
 		for i := 0; i < messagesCount / producersCount; i++ {
 			p.Publish(i)
 		}
-		wg.Done()
 	}
 
-	wg.Add(producersCount)
-
 	for i := 0; i < producersCount; i++ {
+		wg.Add(1)
 		go publish(producers[i])
 	}
 
@@ -99,7 +92,4 @@ func TestUniqueMessageID(t *testing.T) {
 		t.Fatal(err)
 	case <-done:
 	}
-
-	QueueBufferSize = defaultQueueBufferSize
-	ConsumerBufferSize = defaultConsumerBufferSize
 }

@@ -8,6 +8,7 @@ type Producer interface {
 	Publish(value int) error
 	
 	// applies your custom filter before publishing messages
+	// note that you cannot filter messages by ID since they are generated on producer's side
 	WithFilter(f Filter) Producer
 
 	// built-in filters
@@ -26,13 +27,15 @@ type producer struct {
 }
 
 func (p *producer) Publish(value int) error {
-	message := createMessage(p.q, value)
+	messageDraft := Message{ Value: value }
 
 	for _, filter := range p.filters {
-		if !filter(message) {
+		if !filter(messageDraft) {
 			return nil
 		}
 	}
+
+	message := createMessage(p.q, value)
 
 	p.q.mu.RLock()
 	defer p.q.mu.RUnlock()

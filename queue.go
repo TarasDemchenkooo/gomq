@@ -5,9 +5,6 @@ import (
 	"sync/atomic"
 )
 
-const defaultQueueBufferSize = 64
-var QueueBufferSize = defaultQueueBufferSize
-
 type Queue interface {
 	// get queue name
 	Name() string
@@ -36,10 +33,10 @@ func (q *queue) Name() string {
 }
 
 func (q *queue) Subscribe() Consumer {
-	c := newConsumer(q)
-
 	q.mu.RLock()
 	defer q.mu.RUnlock()
+
+	c := newConsumer(q)
 
 	if q.closed {
 		return c
@@ -59,14 +56,19 @@ func (q *queue) ConsumerCount() int {
 	return len(q.consumers)
 }
 
-func newQueue(name string) *queue {
+func newQueue(name string, opts ...QueueOption) *queue {
 	q := &queue{
 		name: name,
-		buffer: make(chan Message, QueueBufferSize),
+		buffer: make(chan Message, defaultQueueBufferSize),
 		consumers: make(map[*consumer]struct{}),
 	}
 
+	for _, opt := range opts {
+		opt(q)
+	}
+
 	go q.deliver()
+
 	return q
 }
 
@@ -75,7 +77,6 @@ func (q *queue) unsubscribe(c *consumer) {
 	defer q.cmu.Unlock()
 
 	delete(q.consumers, c)
-	close(c.buffer)
 }
 
 func (q *queue) closeQueue() {
@@ -94,18 +95,22 @@ func (q *queue) deliver() {
 	for message := range q.buffer {
 		q.cmu.Lock()
 		for c := range q.consumers {
-			select {
-			case c.buffer <- message:
-			default:
-			}
+			c.bmu.Lock()
+			c.buffer = append(c.buffer, message)
+			c.bmu.Unlock()
+			c.cond.Signal()
 		}
 		q.cmu.Unlock()
 	}
 
 	q.cmu.Lock()
 	for c := range q.consumers {
-		close(c.buffer)
+		c.bmu.Lock()
+		c.bufferClosed = true
+		c.bmu.Unlock()
+		c.cond.Signal()
 	}
+
 	clear(q.consumers)
 	q.cmu.Unlock()
 }

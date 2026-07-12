@@ -10,7 +10,7 @@ func TestProducerPublishing(t *testing.T) {
 
 	p := b.NewProducer("a")
 
-	for i := 0; i < QueueBufferSize; i++ {
+	for i := 0; i < defaultQueueBufferSize; i++ {
 		err := p.Publish(i)
 
 		if err != nil {
